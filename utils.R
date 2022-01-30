@@ -1,5 +1,6 @@
 library(textmineR)
 library(quanteda)
+library(readr)
 library(rlist)
 library("spacyr")
 library(plotly)
