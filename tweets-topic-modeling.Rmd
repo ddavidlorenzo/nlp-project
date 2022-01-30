@@ -1,19 +1,33 @@
 ---
 title: "Topic Modeling on the tweets dataset"
+author: "David Lorenzo Alfaro"
 output: html_document
 ---
-
-## Introduction
-
-## Problem description
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+## Introduction
+The increasingly overwhelming amount of available natural language motivates the pressing need to find efficient and reliable computational techniques capable of processing and analysing this type of data to achieve human-like natural language understanding for a wide range of downstream tasks. Over the last decade, Natural Language Processing (NLP) has seen impressively fast growth, primarily favoured by the increase in computational power and the progress on unsupervised learning in linguistics.
+
+Dealing with unannotated data poses as an unsupervised learning problem, a paradigm within Machine Learning in which no outputs or target variables are provided, i.e., the model is only trained with inputs x, $D=\{x_i\}_{i=1}^N$, with the goal being to discover or extract patterns present in data. Often referred to as knowledge discover in the literature, this class of problem is much less defined and since it lacks from ground truth, it is not trivial to find efficient metrics to use for the model to learn about relationships in data and to assess goodness of the identified groups.
+
+In this assignment, we use Latent Dirichlet Allocation (LDA) (Blei et al., 2003), a generative probabilistic model for collections of discrete data such as text corpora in which each item is modelled as a finite mixture over an underlying set of topics. In this context, we attempt to obtain meaningful representations of documents according to the topic probabilities yielded by a LDA model.
+
+## Problem description
+
+For this work we will use a dataset composed of 1.6 million tweets,  first introduced (Go et al., 2009). Originally proposed for sentiment classification, in this assignment we are mainly concerned with the text of the messages and not in the label, from which the most prominent topics will be captured via LDA.
+
 ## Import all dependencies
 
-Libraries `quanteda` and `spacyr` are used for preprocessing purposes. Particularly, we will first use the former for token-level processing and filtering, to later use spaCy to lemmatize the resultant tokens. On the other hand, `textmineR`
+Check whether all necessary packages are installed, and install those that are not automatically from the `CRAN` repository.
+
+```{r, results=FALSE}
+source("requirements.R")
+```
+
+Packages `quanteda` and `spacyr` are used for preprocessing purposes, `textmineR` to induce a topic model from data using LDA and to perform queries at inference time; packages `readr` and `rlist` to serialize information allowing to load (store) data from disk to provide with faster execution times by avoiding repeating calculations; and `plotly`, used to generate interactive graphs to visualize topic assignations for words and documents.
 
 ```{r, results=FALSE}
 library(textmineR)
@@ -22,6 +36,7 @@ library(readr)
 library(rlist)
 library("spacyr")
 source("utils.R")
+
 ```
 
 ## Load data
@@ -47,7 +62,7 @@ test_size <- 100000
 Similarly, in order to grant reproducibility of all experiments hereby conducted we set a seed. This will induce deterministic execution of directives using randomness (e.g., the `sample` function).
 
 ```{r}
-seed<-0
+seed <- 0
 ```
 
 Let us generate the subsequent output filenames for both the training and test set. As aforementioned, this will come handy to avoid repeating preprocessing steps that should provide a deterministic execution, due to the static nature of the data.
@@ -155,7 +170,7 @@ spacy_finalize()
 head(df.spacy, 10)
 ```
 
-Lemmatisation (or lemmatization) in linguistics refers to the process of gathering altogether the inflected forms of a word so they can be analysed as a single item, identified by the word's lemma, or dictionary form.
+Lemmatisation in linguistics refers to the process of gathering altogether the inflected forms of a word so they can be analysed as a single item, identified by the word's lemma, or dictionary form. In order to reduce the number of tokens effectively, we dump all meanings of formal verbs and nouns into their dictionary form.
 
 ```{r}
 df.processed <- aggregate(df.spacy$lemma, list(df.spacy$doc_id), FUN=reduce)$x
@@ -174,11 +189,32 @@ if (file.exists(out_file_train)){
 }
 ```
 
-Further, the `utils` model features some functions that enables applying this very processing pipeline. Namely, they are the `preprocessing` and the `tokenize` directives. As the name suggests, the former covers all the preprocessing process, whereas the later is solely concerned with the tokenization process. Refer to the code for further details, should you require it. 
+Further, the `utils` model features some functions that enables applying this very processing pipeline. Namely, they are the `preprocessing` and the `tokenize` directives. As the name suggests, the former covers all the preprocessing process, whereas the later is solely concerned with the tokenization process. Refer to the code for further details, should you require it.
 
 ## Model induction via LDA.
 
+Latent Dirichlet allocation constitutes one of the main approaches for topic modeling. It is roughly based on these two principles:
+
+-   *Every document is a mixture of topics*. A document may contain words belonging for several topics. LDA assigns documents to topics in a probabilistic fashion, i.e., membership to topics is inferred from the likelihood estimates.
+
+-   *Every topic is a mixture of words*. A topic can be characterized by a set of words. For example, given the topic of "entertainment", one could think of words such as "music", "singer", "actress", "movie", etc. A word may belong to more than one topic.
+
+This allows documents to interact with each other, i.e., they can share semantics, rather than being segmented into mutually-exclusive groups (e.g., a binary classification problem), in a way that resembles the organic use of natural language.
+
+
 ### Term co-ocurrence matrix.
+
+A term co-ocurrence matrix (TCM) is a square matrix whereby rows and columns are characterized by each of the tokens in the vocabulary of the corpus. There are to main approaches:
+
+1.  **term-context matrix**, where the whole document serves as a context. If two terms occur in the same context, they are said to have occurred in the same occurrence context.
+
+2.  **k-skip-n-gram** approach, where a sliding window will include the (k+n) words, both to the left and the right. This window will serve as the context now. Terms that co-occur within this context are said to have co-occurred.
+
+Because length of the tweets are bounded, we chose the first approach, which slightly reduces the overhead introduced by the windowing functions. This is a particular case of the skip gram model, where the size of the window equals the size of the document.
+
+The TCM is based on the rationale that terms that appear conjointly across the corpus are prone to be semantically related. Of course, removal of stop words avoids appearance of spurious correlations that may arise. Similarly, in order to better grasp those relations (and to reduce complexity of the matrix), the lemmatisation dumps all forms of a verb/noun into its dictionary form.
+
+As the cardinality of the vocabulary increases, correlations between words tend to be more marginal, in the sense that out of all the words, only a small proportion of them are meaningfully related. Therefore, sparse representations are more suitable (the equivalent dense representations have a quadratic order of space complexity). In this problem, we have a vocabulary size of 68984 tokens, which leads to a TCM with 4,758,792,256 entries. As for the preprocessed dataset, we serialize it to reduce the massive computational overhead.
 
 ```{r}
 tcm_filename <- paste0(serial_dir, "tcm_tweets.dat")
@@ -195,6 +231,26 @@ if (file.exists(tcm_filename)){
 ```
 
 ### Fitting the model.
+
+Once we have a TCM, we can use the same procedure to make an embedding model. It is worth noting that this process is very costly because of dimensionality of the matrix. We fit a LDA model from the data with the following hyperparameters:
+
+-   `dtm` : document term matrix or term co-occurrence matrix of class dgCMatrix.
+
+-   `iterations` (200): Integer number of iterations for the *Gibbs* sampler to run.
+
+-   `burnin` (): Integer number of burnin iterations. If `burnin` is greater than -1, the resulting "phi" and "theta" matrices are an average over all iterations greater than `burnin`
+
+-   `alpha` (): Vector of length `k` for asymmetric or a number for symmetric. This is the prior for topics $T = \{t_1, ..., t_n\}$ over documents $D=\{d_1, …, d_n\}$, i.e., $\{P(t_i|d_i) \forall t_i \in T \wedge d_i \in D\}$.
+
+-    `beta` (): Vector of length `ncol(dtm)` for asymmetric or a number for symmetric. This is the prior for words $W=\{w_1, ...., w_n \}$ over topics $T = \{t_1, ..., t_n\}$, i.e., $\{P(w_i|T) | w_i \in W\}$.
+
+-   `optimize_alpha` (`True`): adjust $\alpha$ every 10 *Gibbs* iterations.
+
+-   `calc_coherence` (`True`): calculate probabilistic coherence of topics after the model is trained.
+
+-   `calc_r2` (`True`): calculate R-squared after the model is trained.
+
+-   `cpus` (4): number of CPUs to use to compute the model.
 
 ```{r}
 k_topics <- 20
@@ -221,53 +277,54 @@ if (file.exists(embeddings_filename)){
 
 R-squared ($R^2$) comes handy to get an estimate of the overall goodness of fit of the model. A possible interpretation of this metric is as the amount of variance explained by the model respect to the original term co-ocurrence matrix. A property verified by R-squared is that $0\leq R^2 \leq 1$, where $R^2=1$ denote a perfect fit, hence values closer to 1 are preferrable. In this context, a very low value of $R^2$ may reveal (1) deficiencies in the training process, e.g., because of bad election of the model hyperparametrization, mainly due to suboptimal number of the topics to identify or the number of iterations to perform; or (2) absence of correlations in data, which does not allow for pattern identification.
 
-The yielded value for R-squared is $R^2=$ ```{r} embeddings$r2```, which far from being ideal, largely enhances the one obtained without any preprocessing ($\sim 0.11$). It is worth noting that, in this scenario, the *optimal* number of topics, denoted $k$, is likely to be larger than 20 ($|data_{training}|=2·10^5$). That notwithstanding, large values for $k$ can derive in computationally intractable problems and increase the complexity to interpret the topics. 
+The yielded value for R-squared is $R^2= 0.304$, which far from being ideal, largely enhances the one obtained without any preprocessing ($\sim 0.113$). It is worth noting that, in this scenario, the *optimal* number of topics, denoted $k$, is likely to be larger than 20 (remember that the cardinality, denoted $|·|$, of the training set is $|data_{training}|=2·10^5$). That notwithstanding, large values for $k$ can derive in computationally intractable problems and increase the complexity to interpret the topics.
 
 ```{r}
 # Get an R-squared for general goodness of fit
 embeddings$r2
 
 ```
+Now, let us retrieve the top $k$ most representative terms of each topic, using the `GetTopTerms` function, which takes as input the matrix containing the likelihood for words to belong to each of the topics (`embeddings$phi`) and the number of top terms to extract, `top_k_terms`.
 
-Prior distribution for words over topics, i.e., $P(x_i|Topics)$.
-
-```{r}
-word = "day"
-
-index_word <- rownames(embeddings$theta)
-which(unlist(rownames(embeddings$theta))==word)
-
-```
+Then, we create a summary including the name of the topics and the prevalence, coherence and top $k$ terms of each of the topics.
 
 ```{r}
 top_k_terms = 5
-# Get top terms, no labels because we don't have bigrams
+# Get top terms, no labels we only have unigrams (words treated as a unique entity).
 embeddings$top_terms <- GetTopTerms(phi = embeddings$phi,
                                     M = top_k_terms)
 
-embeddings$summary <- ldaSummary(embeddings)
 
-data.frame(topic = rownames(embeddings$phi),
-                                 coherence = round(embeddings$coherence, 3),
-                                 prevalence = round(colSums(embeddings$theta), 3),
-                                 top_terms = apply(embeddings$top_terms, 2, paste,
-                                                   collapse=", "),
-                                 stringsAsFactors = FALSE)
+embeddings$summary <- data.frame(
+  topic = rownames(embeddings$phi),
+  prevalence = round(colSums(embeddings$theta), 3),
+  coherence = round(embeddings$coherence, 3),
+  top_terms = apply(embeddings$top_terms, 2, paste, collapse=", "),
+  stringsAsFactors = FALSE
+  )
+
+# alternatively, you can use the ldaSummary function:
+# embeddings$summary <- ldaSummary(embeddings)
 ```
 
-```{r}
-length(embeddings$theta)
-```
+Let us have a look to the summary, focusing on the topics ordered by prevalence, which measures the density of tokens along each embedding dimension (i.e., each topic).
 
 ```{r}
 printSummaryTable("prevalence")
 ```
 
+
+Similarly, we can order the table by topic coherence.
+
 ```{r}
 printSummaryTable("coherence")
 ```
 
-## Global predictions
+### Global predictions
+
+After inspecting the model, a naive method to test whether the topics are able to convey the semantic information described by the top terms is by asking the model to classify other related terms. A constraint to this approach is that the *query* terms should belong to the vocabulary of the model, similar to all approaches treating words as "indices", rather than a set of features (semantic-driven embeddings).
+
+To that end, let us first predict the membership likelyhood to each of the topics for all words in the vocabulary.
 
 ```{r}
 word_predictions_filename = paste0(serial_dir, "word_predictions_k", k_topics, ".dat")
@@ -282,12 +339,29 @@ df.processed.predictions <- predict_word(embeddings,
 
 ```
 
+Afterwards, let us test some words. This is the behaviour that we expect from the model:
+
+-   Word `college` can be semantically related to topic 7 (feel, bad, school, hate, sick), and to a lesser extent to topic 20 (back, home, week, work, leave) and topic 9 (work, night, time, sleep, bed)
+
+-   Word `tired` can be semantically associated to topic 9 (work, night, time, sleep, bed).
+
+-   Word `lunch` can be linked to topic 18 (eat, make, food, good, dinner).
+
+-   Word `android` can be semantically associated to topic 6 (work, find, iphone, phone, update).
+
+-   Word `disease` can be related to topic 3 (hurt, feel, hair, bad, back).
+
 ```{r}
 plot_words2topic(c("college", "tired", "lunch", "android", "disease"),
                  df.processed.predictions)
 ```
+As it can be seen from the graphs, all our hypothesis are satisfied, i.e., the model is able to leverage relations among words and topics based on the frequency of appearance in the same context.
 
 ## Working on the test dataset: inference.
+
+In this section, we embed documents under the LDA model to obtain topics of **local** contexts, rather than global ones.
+
+First, let us first preprocess the test set.
 
 ```{r}
 if (file.exists(out_file_test)){
@@ -298,32 +372,35 @@ if (file.exists(out_file_test)){
 }
 ```
 
+Then, let's check whether the tweets seem to be properly preprocessed.
+
 ```{r}
 set.seed(seed)
 sample(df.processed.test, 6)
 ```
 
+In this case, we are interested in modelling each document as a mixture of topics. To examine the per-document-per-topic probabilities, we first obtain a document-term matrix, which describes the frequency of terms that occur in a collection of documents, i.e., a standard bag-of-words representation.
+
 ```{r}
 dtm.test <- getDtm(df.processed.test)
 ```
 
+Then, we project the documents into the embedding space by predicting on held-out documents, using *Gibbs* sampling.
+
 ```{r}
-# Project the documents into the embedding space
 doc_predictions_filename <- paste0(serial_dir, "doc_predictions_k", k_topics, ".dat")
 
-# predict on held-out documents using gibbs sampling "fold in"
 df.processed.test.predictions <- predict_doc(embeddings,
                                              dtm=dtm.test,
                                              out=doc_predictions_filename
                                              )
 ```
 
+Now, let us get four random documents from the test set containing the word "college". Notice that the documents shown here are the preprocessed tweets, not the original, and thus they may not be very interpretable.
+
 ```{r}
 word_search<-"college"
 search_sample <- 4
-
-# indices <- which(lapply(df.processed.test.predictions, function(x){grepl(word_search, x, fixed=T)}
-#                         ) %>% unlist(use.names=F) == T)
 
 set.seed(seed)
 doc.search <- df.processed.test[
@@ -335,36 +412,57 @@ doc.search <- df.processed.test[
 doc.search
 ```
 
+What is the distribution of the documents respect to the topics? Are they any meaningful?
+
 ```{r}
 plot_doc2topic(doc.search, predictions=df.processed.test.predictions)
 ```
 
+As it can be seen, most of the documents seem to be highly related to topic 20, characterized by words back, home, week, work and leave. We argue the model is capable of grasping the overall meaning of the documents, referring to going back to college ( preprocessed tweet: since three month old go college now back year now), doing work for college ("back college least make whether work going do another matter") and having a job interview to afford college expenses ("wooo job interview awesome opportunity heart set travel summer need money college").
+
+On the other hand, the model reveals tweet "sit home reply hundred message multiply good news college english class final" is related with topics 7 (feel, bad, school, hate, sick) and topic 4 (twitter, follow, tweet, read, send). Only the latter seems to make sense, as it includes related words such as "reply" or "message".
+
+<br>
+
+Now, let us retrieve some random documents
+
 ```{r}
-set.seed(15)
+set.seed(16)
 doc_random_search <- sample(df.processed.test, search_sample)
 plot_doc2topic(doc_random_search, predictions=df.processed.test.predictions)
 ```
+The model is able to capture salient information about the documents, whenever they can be somehow linked to a topic, whereas for those that cannot be associated clearly to any topic the per-topic probability estimates are uniformly distributed.
 
-```{r}
-printSummaryTable("coherence")
-```
-
+When querying for tweets containing "Harry Potter", the model identifies the main topic is topic 17 (watch, movie, sad, love, tv).
 ```{r}
 topic_search(df.processed.test, "harry potter", df.processed.test.predictions, seed=seed)
 ```
+When querying for documents containing the word purchase, results are again meaningful:
 
+-   The first tweet contains the word "wait", related with topic 2 (nt, ca, wait, happy, birthday) and the word "home", related with topic 20 (back, home, week, work, leave)
+
+-   The second tweet contains "browse" related with topic 6 (work, find, iphone, phone, update) and "purchase", with topic 12 (buy, day, year, pay, money).
+
+-   The third tweet contains words "purchase" and "buy", associated with topic 12.
+
+-   The fourth tweet contains the word "page", related with topic 6, and words "store", "purchase" and "checkout", related with topic 12.
 ```{r}
-doc.search
+topic_search(df.processed.test, "purchase", df.processed.test.predictions, seed=seed)
 ```
+## Conclusion
+Throughout this work we have found LDA to be very effective onto finding prominent topics in vast amounts of raw, unannotated data. However, because words are treated as mere indices, the model fails to resolve ambiguities inherent to natural language (e.g., lexical, syntactic, semantic and pragmatic ambiguities).
+
+
+Furthermore, the notion of similarity between words is solely based on words appearing in similar contexts, and not in the intrinsic meaning of each word (e.g., the semantic information a word conveys, given the context in which it appears), where Neural Natural Language Processing, which favours from using Deep Learning models to learn language representations, poses as a better alternative, e.g., BERT (Devlin et al., 2018), ELMo (Peters et al., 2018) and some off-the-likes.
+
+
+## References
+Blei, D. M., Ng, A. Y., & Edu, J. B. (2003). Latent Dirichlet Allocation. *Journal of Machine Learning Research, 3*(Jan), 993–1022.
+
+Go, A., Bhayani, R., & Huang, L. (2009). Twitter Sentiment Classification using Distant Supervision. *CS224N Project Report, Stanford, 1*(2009), 1–12.
+
+## Annex I. Session information.
 
 ```{r}
-plot_doc2topic(doc.search, predictions=df.processed.test.predictions)
-```
-
-```{r}
-topic_search(df.processed.test, "new year", df.processed.test.predictions, seed=seed)
-```
-
-```{r}
-
+sessionInfo()
 ```
