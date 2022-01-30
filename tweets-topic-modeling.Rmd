@@ -1,0 +1,370 @@
+---
+title: "Topic Modeling on the tweets dataset"
+output: html_document
+---
+
+## Introduction
+
+## Problem description
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import all dependencies
+
+Libraries `quanteda` and `spacyr` are used for preprocessing purposes. Particularly, we will first use the former for token-level processing and filtering, to later use spaCy to lemmatize the resultant tokens. On the other hand, `textmineR`
+
+```{r, results=FALSE}
+library(textmineR)
+library(quanteda)
+library(readr)
+library(rlist)
+library("spacyr")
+source("utils.R")
+```
+
+## Load data
+
+Let us first define some variables to handle data directories:
+
+-   `data_dir` holds the relative path where all data is stored.
+
+-   `serial_dir` is the relative path where all serialized data is stored, allowing for faster execution by eschewing recomputing some key components.
+
+```{r}
+data_dir <- "data\\"
+serial_dir <- paste0(data_dir, "serialized\\")
+```
+
+Next, we define the size of the training and test sets, composed of $2·10^5$ and $10^5$ instances, respectively, where an instance is a preprocessed tweet (i.e., not in raw form).
+
+```{r}
+train_size <- 200000
+test_size <- 100000
+```
+
+Similarly, in order to grant reproducibility of all experiments hereby conducted we set a seed. This will induce deterministic execution of directives using randomness (e.g., the `sample` function).
+
+```{r}
+seed<-0
+```
+
+Let us generate the subsequent output filenames for both the training and test set. As aforementioned, this will come handy to avoid repeating preprocessing steps that should provide a deterministic execution, due to the static nature of the data.
+
+```{r}
+out_file_train <- paste0(data_dir, "tweets-train-",floor(train_size/1000),"k-prep.txt")
+out_file_test <- paste0(data_dir, "tweets-test-",floor(test_size/1000),"k-prep.txt")
+print(out_file_train)
+print(out_file_test)
+```
+
+In order to generate the training and test datasets in an unbiased manner:
+
+1.  Load the whole dataset and obtain a (random) permutation. Randomness can be controlled via a specific random state.
+
+2.  Obtain the training dataset, composed of `train_size` instances, denoted $data_{training}=\{x_1, ..., x_i, ..., x_{train\_size}\}$
+
+3.  Obtain the test dataset, composed of `test_size` instances, denoted $data_{test}=\{x_1, ..., x_i, ..., x_{test\_size}\}$
+
+4.  In order to leverage memory management, remove the `df.tweets` object (no longer necessary).
+
+```{r}
+input_file <- paste0(data_dir,"tweets.csv")
+set.seed(seed)
+df.tweets <- sample(read.csv(input_file, header=FALSE)$V6)
+df.tweets.train <- df.tweets[1:train_size]
+df.tweets.test <- df.tweets[train_size+1: (test_size+1)]
+
+# Liberate memory space
+rm(df.tweets)
+
+head(df.tweets.train, 10)
+```
+
+## Preprocessing
+
+Tweets are normally written in an informal register Thus, the data preparation phase is arguably the most challenging one, entailing standardization of the language, dealing with slang words and phrases and wrong grammar and spelling, to name a few. In this work we propose a rather naive workflow to deal with the heterogeneous nature of the data, albeit benefiting from further preprocessing could potentially enhance performance of the subsequent models.
+
+### Tokenization
+
+Preprocessing is largely conducted at word level. We utilize `quanteda` to *tokenize* tweets, i.e., decomposing an arbitrarily long sentence or text into its constituent words and/or symbols.
+
+First, we define a corpus from the original training set. Note that we impose texts to be encoded in ASCII, removing non-ASCII characters like those refering to emojis or non-English graphemes.
+
+Next, sentences are broken down into tokens. Illegal tokens will be filtered out according to the following criteria:
+
+1.  `remove_punct`: removes punctuation characters, e.g., "!", ".", ";".
+
+2.  `remove_url`: eliminates URLs beginning with http(s)
+
+3.  `remove_symbols`: removes special symbols.
+
+4.  `remove_numbers`: deletes tokens that consist only of numbers, but not words that start with digits, e.g., `2day`.
+
+5.  `tokens_tolower()`: convert all tokens to lower case.
+
+6.  Remove English stop words, yielded by invoking the `stopwords("en")` function, where "en" stands for the language code.
+
+Furthermore, we delete the ampersand (&) and quot symbols, and define some regular expressions to delete usernames (`@\\S+`), and URLs starting with "www" (`www\\.\\S+`)
+
+------------------------------------------------------------------------
+
+***Note***: the `quanteda` library provides a directive which remove Twitter characters `@` and `#`, denoted `remove_twitter`. We do not use it here because we deal with such symbols in a more meaningful fashion.
+
+```{r}
+df.corpus <- iconv(corpus(df.tweets.train), from = "UTF-8", to = "ASCII", sub = "")
+
+df.tokens <- tokens(df.corpus, 
+                    remove_punct = TRUE, 
+                    remove_url = TRUE, 
+                    remove_symbols = TRUE,
+                    remove_numbers = TRUE
+                    ) %>% tokens_tolower(
+                    ) %>% tokens_select(
+                      pattern = stopwords("en"), selection = "remove"
+                    ) %>% tokens_select(
+                      pattern = "@\\S+", selection="remove", valuetype ="regex"
+                    ) %>% tokens_select(
+                      pattern = "www\\.\\S+", selection="remove", valuetype ="regex"
+                    ) %>% tokens_select(
+                      pattern = "amp", selection="remove"
+                    ) %>% tokens_select(
+                      pattern = "quot", selection="remove"
+                    )
+
+head(df.tokens, 5)
+```
+
+SpaCy is an open source and state-of-the-art performant library that features what they call *linguistically-motivated tokenization*. In this work, we aim at finding topics on tweets written in English. We chose the `en_core_web_sm` language model, which provides simple and fast preprocessing pipelines, with nearly negligible accuracy differences with respect to the so-called *large* model, `en_core_web_trf`.
+
+```{r}
+spacy_initialize(model = "en_core_web_sm")
+```
+
+The `spacy_parse` function calls spaCy to both tokenize and tag the texts, and returns a `data.table` of the results. Notice that, prior to feeding the parser with inputs, we assemble tokens into texts. We found by empirical experimentation that parsing text in this manner provides faster computations, probably because fewer invocations to the parser are required.
+
+According to the package documentation, while running spaCy on Python through R, a Python process is always running in the background and `Rsession` will take up a lot of memory (typically over 1.5GB). In order to free up the memory allocated to such process, we call the `spacy_finalize` function.
+
+```{r}
+df.spacy <- lapply(df.tokens, reduce) %>% unlist(use.names = F) %>% spacy_parse
+spacy_finalize()
+```
+
+```{r}
+head(df.spacy, 10)
+```
+
+Lemmatisation (or lemmatization) in linguistics refers to the process of gathering altogether the inflected forms of a word so they can be analysed as a single item, identified by the word's lemma, or dictionary form.
+
+```{r}
+df.processed <- aggregate(df.spacy$lemma, list(df.spacy$doc_id), FUN=reduce)$x
+
+head(df.processed, 10)
+
+```
+
+Preprocessing the input is a costly process, even for a rather small dataset. The most straightforward to alleviate computational needs, one can serialize information, allowing for loading (or storing) data from disk whilst maintaining all meaningful info. In this case, it can be convenient to keep the processed tweets in a human-readable format, hence we simply sink the tweets into a `txt` file using the `write_lines` function of the `readr` package. Similarly, to load data from, we use the `read.delim` function.
+
+```{r}
+if (file.exists(out_file_train)){
+  df.processed <- read.delim(out_file_train, header=F)$V1
+} else {
+  write_lines(df.processed, out_file_train)
+}
+```
+
+Further, the `utils` model features some functions that enables applying this very processing pipeline. Namely, they are the `preprocessing` and the `tokenize` directives. As the name suggests, the former covers all the preprocessing process, whereas the later is solely concerned with the tokenization process. Refer to the code for further details, should you require it. 
+
+## Model induction via LDA.
+
+### Term co-ocurrence matrix.
+
+```{r}
+tcm_filename <- paste0(serial_dir, "tcm_tweets.dat")
+
+if (file.exists(tcm_filename)){
+  tcm <- list.unserialize(tcm_filename)
+} else{
+  tcm <- CreateTcm(doc_vec = df.processed,
+                   #skipgram_window = 3,
+                   verbose = FALSE,
+                   cpus = 4)
+  list.serialize(tcm, tcm_filename)
+}
+```
+
+### Fitting the model.
+
+```{r}
+k_topics <- 20
+embeddings_filename <- paste0(serial_dir, "lda_model_k", k_topics, ".dat")
+
+if (file.exists(embeddings_filename)){
+  embeddings <- list.unserialize(embeddings_filename)
+} else{
+  print(embeddings_filename)
+  embeddings <- FitLdaModel(dtm = tcm,
+                          k = k_topics,
+                          iterations = 200,
+                          burnin = 175,
+                          alpha = 0.1,
+                          beta = 0.05,
+                          optimize_alpha = TRUE,
+                          calc_coherence = TRUE,
+                          calc_r2 = TRUE,
+                          cpus = 4)
+  
+  list.serialize(embeddings, embeddings_filename)
+}
+```
+
+R-squared ($R^2$) comes handy to get an estimate of the overall goodness of fit of the model. A possible interpretation of this metric is as the amount of variance explained by the model respect to the original term co-ocurrence matrix. A property verified by R-squared is that $0\leq R^2 \leq 1$, where $R^2=1$ denote a perfect fit, hence values closer to 1 are preferrable. In this context, a very low value of $R^2$ may reveal (1) deficiencies in the training process, e.g., because of bad election of the model hyperparametrization, mainly due to suboptimal number of the topics to identify or the number of iterations to perform; or (2) absence of correlations in data, which does not allow for pattern identification.
+
+The yielded value for R-squared is $R^2=$ ```{r} embeddings$r2```, which far from being ideal, largely enhances the one obtained without any preprocessing ($\sim 0.11$). It is worth noting that, in this scenario, the *optimal* number of topics, denoted $k$, is likely to be larger than 20 ($|data_{training}|=2·10^5$). That notwithstanding, large values for $k$ can derive in computationally intractable problems and increase the complexity to interpret the topics. 
+
+```{r}
+# Get an R-squared for general goodness of fit
+embeddings$r2
+
+```
+
+Prior distribution for words over topics, i.e., $P(x_i|Topics)$.
+
+```{r}
+word = "day"
+
+index_word <- rownames(embeddings$theta)
+which(unlist(rownames(embeddings$theta))==word)
+
+```
+
+```{r}
+top_k_terms = 5
+# Get top terms, no labels because we don't have bigrams
+embeddings$top_terms <- GetTopTerms(phi = embeddings$phi,
+                                    M = top_k_terms)
+
+embeddings$summary <- ldaSummary(embeddings)
+
+data.frame(topic = rownames(embeddings$phi),
+                                 coherence = round(embeddings$coherence, 3),
+                                 prevalence = round(colSums(embeddings$theta), 3),
+                                 top_terms = apply(embeddings$top_terms, 2, paste,
+                                                   collapse=", "),
+                                 stringsAsFactors = FALSE)
+```
+
+```{r}
+length(embeddings$theta)
+```
+
+```{r}
+printSummaryTable("prevalence")
+```
+
+```{r}
+printSummaryTable("coherence")
+```
+
+## Global predictions
+
+```{r}
+word_predictions_filename = paste0(serial_dir, "word_predictions_k", k_topics, ".dat")
+
+# predict on held-out documents using gibbs sampling "fold in"
+df.processed.predictions <- predict_word(embeddings,
+                                         tcm,
+                                         out=word_predictions_filename,
+                                         method = "gibbs",
+                                         iterations = 200, 
+                                         burnin = 175)
+
+```
+
+```{r}
+plot_words2topic(c("college", "tired", "lunch", "android", "disease"),
+                 df.processed.predictions)
+```
+
+## Working on the test dataset: inference.
+
+```{r}
+if (file.exists(out_file_test)){
+  df.processed.test <- read.delim(out_file_test, header=F)$V1
+} else {
+  df.processed.test <- preprocess(df.tweets.test)
+  write_lines(df.processed.test, out_file_test)
+}
+```
+
+```{r}
+set.seed(seed)
+sample(df.processed.test, 6)
+```
+
+```{r}
+dtm.test <- getDtm(df.processed.test)
+```
+
+```{r}
+# Project the documents into the embedding space
+doc_predictions_filename <- paste0(serial_dir, "doc_predictions_k", k_topics, ".dat")
+
+# predict on held-out documents using gibbs sampling "fold in"
+df.processed.test.predictions <- predict_doc(embeddings,
+                                             dtm=dtm.test,
+                                             out=doc_predictions_filename
+                                             )
+```
+
+```{r}
+word_search<-"college"
+search_sample <- 4
+
+# indices <- which(lapply(df.processed.test.predictions, function(x){grepl(word_search, x, fixed=T)}
+#                         ) %>% unlist(use.names=F) == T)
+
+set.seed(seed)
+doc.search <- df.processed.test[
+                lapply(df.processed.test,
+                       function(x){grepl(word_search, x, fixed=T)}
+                       ) %>% unlist(use.names=F)
+                ] %>% sample(search_sample)
+
+doc.search
+```
+
+```{r}
+plot_doc2topic(doc.search, predictions=df.processed.test.predictions)
+```
+
+```{r}
+set.seed(15)
+doc_random_search <- sample(df.processed.test, search_sample)
+plot_doc2topic(doc_random_search, predictions=df.processed.test.predictions)
+```
+
+```{r}
+printSummaryTable("coherence")
+```
+
+```{r}
+topic_search(df.processed.test, "harry potter", df.processed.test.predictions, seed=seed)
+```
+
+```{r}
+doc.search
+```
+
+```{r}
+plot_doc2topic(doc.search, predictions=df.processed.test.predictions)
+```
+
+```{r}
+topic_search(df.processed.test, "new year", df.processed.test.predictions, seed=seed)
+```
+
+```{r}
+
+```

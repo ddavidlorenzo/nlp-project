@@ -1,0 +1,160 @@
+---
+title: "Topic Modeling on the news headlines dataset"
+output: html_document
+---
+
+## Motivation
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Import all dependencies
+
+```{r, results=FALSE}
+library(textmineR)
+library(quanteda)
+library(readr)
+library("spacyr")
+```
+
+## Load data
+
+```{r}
+
+input_file <- "abcnews.csv"
+out_file_training  <- "news-200k-prep.txt"
+
+train_size <- 200000
+test_size <- 10000
+
+set.seed(0)
+df.news <- sample(read.csv(input_file)$headline_text)
+
+df.news.train <- df.news[1:train_size]
+df.news.test <- df.news[train_size+1: train_size+test_size+1]
+
+# Liberate memory space
+rm(df.news)
+
+head(df.news.train, 10)
+```
+
+Create corpus
+```{r}
+df.corpus <- iconv(corpus(df.news.train), from = "UTF-8", to = "ASCII", sub = "")
+
+df.tokens <- tokens(df.corpus, 
+                    remove_punct = TRUE, 
+                    remove_url = TRUE, 
+                    remove_symbols = TRUE
+                    ) %>% tokens_tolower(
+                    ) %>% tokens_select(
+                      pattern = stopwords("en"), selection = "remove"
+                    )
+
+head(df.tokens, 5)
+```
+
+Initialize SpaCy model.
+
+```{r}
+spacy_initialize(model = "en_core_web_sm")
+```
+
+```{r}
+#reduce <- function(x) { Reduce(paste, x)}
+
+df.spacy <- lapply(df.tokens, function(x){Reduce(paste, x)}) %>% unlist(use.names = F) %>% spacy_parse
+
+spacy_finalize()
+
+head(df.spacy, 10)
+```
+
+```{r}
+df.processed <- aggregate(df.spacy$lemma, list(df.spacy$doc_id), FUN=reduce)$x
+
+head(df.processed, 10)
+
+```
+
+```{r}
+
+if (file.exists(out_file_training)){
+  df.processed <- read.delim(out_file_training, header=F)$V1
+} else {
+  write_lines(df.processed, out_file_training)
+}
+
+```
+
+
+```{r}
+k_topics <- 20
+
+tcm <- CreateTcm(doc_vec = df.processed,
+                 #skipgram_window = 3,
+                 verbose = FALSE,
+                 cpus = 4)
+
+embeddings <- FitLdaModel(dtm = tcm,
+                          k = k_topics,
+                          iterations = 200,
+                          burnin = 175,
+                          alpha = 0.1,
+                          beta = 0.05,
+                          optimize_alpha = TRUE,
+                          calc_coherence = TRUE,
+                          calc_r2 = TRUE,
+                          cpus = 4)
+```
+
+``` {r}
+# Get an R-squared for general goodness of fit
+embeddings$r2
+
+```
+Prior distribution for words over topics, i.e., $P(x_i|Topics)$.
+```{r}
+word = "day"
+
+index_word <- rownames(embeddings$theta)
+which(unlist(rownames(embeddings$theta))==word)
+
+```
+
+```{r}
+top_k_terms = 5
+# Get top terms, no labels because we don't have bigrams
+embeddings$top_terms <- GetTopTerms(phi = embeddings$phi,
+                                    M = top_k_terms)
+
+embeddings$summary <- data.frame(topic = rownames(embeddings$phi),
+                                 coherence = round(embeddings$coherence, 3),
+                                 prevalence = round(colSums(embeddings$theta), 3),
+                                 top_terms = apply(embeddings$top_terms, 2, paste,
+                                                   collapse=", "),
+                                 stringsAsFactors = FALSE)
+```
+
+```{r}
+length(embeddings$theta)
+```
+
+```{r}
+embeddings$summary[order(embeddings$summary$prevalence, decreasing = TRUE),]
+```
+
+```{r}
+embeddings$summary[ order(embeddings$summary$coherence, decreasing = TRUE),]
+```
+
+
+```{r}
+GetTopTerms(phi=embeddings$phi, M = 10)
+
+```
+
+```{r}
+
+```
