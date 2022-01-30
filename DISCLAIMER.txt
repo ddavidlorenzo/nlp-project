@@ -1,0 +1,3 @@
+GitHub does not allow to upload files bigger than 100Mb, and hence I have not been able to upload the dataset. It can be, however, downloaded here: https://www.kaggle.com/kazanova/sentiment140
+
+In order to make the code work as-is, you would need to rename the csv file to "tweets.csv" and place it on the /data directory.
